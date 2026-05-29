@@ -15,7 +15,7 @@ It runs entirely on the device and turns the Cardputer into a portable retro com
 - **Sound**: `BEEP` / `TONE` + `PLAY "C D E F G A B C5"` music command
 - **GPIO access**: `PINMODE`, `DWRITE`, `PWM`, `DIGITALREAD()`, `ANALOGREAD()`, `INKEY()`
 - **Extended math**: `PI`, `SQRT`, `POW` / `^`, `SIN`, `COS`, `TAN`, `ATAN`, `EXP`, `LOG`, `FLOOR`, `CEIL`, `ROUND`, `ABS`, `RND`
-- **SD card support**: `LOAD "filename"` and `SAVE "filename"` (`.bas` files)
+- **SD card support**: All `.bas` files are automatically saved into and loaded from the `/BASIC` folder on the SD card. Use `DIR`, `FILES`, or `LS` to list programs.
 - Full keyboard REPL with backspace and editing on the Cardputer’s 56-key keyboard
 - Small 240×135 display output mixing text and graphics
 
@@ -91,7 +91,7 @@ On boot you will see the `>` prompt. Type commands directly or enter numbered li
 
 | Category     | Commands / Functions                              |
 |--------------|---------------------------------------------------|
-| Program      | `RUN`, `LIST`, `NEW`, `CONT`, `SAVE "name"`, `LOAD "name"` |
+| Program      | `RUN`, `LIST`, `NEW`, `CONT`, `SAVE "name"`, `LOAD "name"`, `DELETE "name"`, `RENAME`, `CAT`, `DIR` / `FILES` / `LS` |
 | Control      | `IF` cond `THEN` line, `GOTO`, `GOSUB`, `RETURN`, `END`, `FOR`/`NEXT` |
 | Data         | `DATA` values, `READ` var1,var2, `RESTORE`        |
 | Graphics     | `CLS`, `PLOT` x,y, `LINE` x1 y1 x2 y2, `CIRCLE`, `RECT`, `FILLRECT`, `LOCATE`, `COLOR`, `SPRITE` id,x,y |
@@ -106,6 +106,7 @@ On boot you will see the `>` prompt. Type commands directly or enter numbered li
 - The display is small (240×135). Use `CLS` frequently for clean output.
 - `DATA` values are collected automatically when you type `RUN`.
 - User sprites are defined with `DEFSPRITE` after positioning the data pointer with `RESTORE`.
+- **File I/O**: `OPEN "file" FOR INPUT/OUTPUT AS #n`, `CLOSE #n`, `PRINT #n, expr`, `INPUT #n, var`, `EOF(n)` are supported for runtime file access from BASIC programs.
 - GPIO pins on the exposed header are safe to use. Avoid internal pins used by display, audio, keyboard, and IMU.
 - Programs are stored in RAM. Use `SAVE`/`LOAD` with a microSD card for persistence.
 - This is an educational / hobby interpreter — not all edge cases of full BASIC are implemented.
