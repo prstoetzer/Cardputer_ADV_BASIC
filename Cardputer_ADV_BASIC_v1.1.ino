@@ -30,7 +30,12 @@
 #define MAX_LINES        300
 #define MAX_GOSUB        10
 #define MAX_FOR_NEST     8
-#define SD_CS_PIN        SS
+
+// Correct SD card pins for M5Stack Cardputer / Cardputer ADV
+#define SD_SPI_SCK_PIN   40
+#define SD_SPI_MISO_PIN  39
+#define SD_SPI_MOSI_PIN  14
+#define SD_SPI_CS_PIN    12
 
 // --------------------------- Data Structures --------------------------------
 std::map<int, String> programLines;
@@ -51,6 +56,11 @@ bool  running = false;
 int   currentLine = 0;
 bool  stopRun = false;
 String lastError = "";
+
+// --------------------------- File I/O Support -------------------------------
+#define MAX_OPEN_FILES 3
+File openFiles[MAX_OPEN_FILES];
+bool fileIsOpen[MAX_OPEN_FILES] = {false};
 
 // DATA / READ / RESTORE
 std::vector<float> dataStore;
@@ -220,6 +230,15 @@ float evaluateExpression(const String& expr, int& pos) {
       if (name == "INKEY") {
         if (pos < expr.length() && expr[pos] == '('){ pos++; skipWS(); if (pos < expr.length() && expr[pos] == ')') pos++; }
         return getInkey();
+      }
+      if (name == "EOF") {
+        if (pos < expr.length() && expr[pos] == '('){ pos++; float fn = evaluateExpression(expr,pos); skipWS(); if (pos < expr.length() && expr[pos] == ')') pos++; 
+          int fnum = (int)fn - 1;
+          if (fnum >= 0 && fnum < MAX_OPEN_FILES && fileIsOpen[fnum]) {
+            return openFiles[fnum].available() ? 0 : 1;
+          }
+          return 1; // EOF if not open
+        }
       }
     }
     return parseNumber();
@@ -400,27 +419,57 @@ void playTune(String tune) {
 
 // --------------------------- SD Card ----------------------------------------
 bool initSD() {
-  SPI.begin();
-  if (SD.begin(SD_CS_PIN)) return true;
-  if (SD.begin()) return true;
+  // Use correct SPI pins for Cardputer / Cardputer ADV
+  SPI.begin(SD_SPI_SCK_PIN, SD_SPI_MISO_PIN, SD_SPI_MOSI_PIN, SD_SPI_CS_PIN);
+
+  // Try with explicit frequency (more reliable on shared SPI bus)
+  if (SD.begin(SD_SPI_CS_PIN, SPI, 25000000)) {
+    return true;
+  }
+
+  // Fallback
+  if (SD.begin(SD_SPI_CS_PIN)) {
+    return true;
+  }
+
   return false;
 }
 
 void saveProgram(String filename) {
   if (!filename.endsWith(".bas")) filename += ".bas";
-  File file = SD.open("/" + filename, FILE_WRITE);
+
+  // Ensure BASIC folder exists
+  if (!SD.exists("/BASIC")) {
+    SD.mkdir("/BASIC");
+  }
+
+  String fullPath = "/BASIC/" + filename;
+  File file = SD.open(fullPath, FILE_WRITE);
   if (!file) { showError("Cannot open file for save"); return; }
+
   for (auto& p : programLines) {
     file.println(String(p.first) + " " + p.second);
   }
   file.close();
-  M5.Display.println("Saved: " + filename);
+  M5.Display.println("Saved: " + filename + "  (in /BASIC/)");
 }
 
 void loadProgram(String filename) {
   if (!filename.endsWith(".bas")) filename += ".bas";
-  File file = SD.open("/" + filename);
-  if (!file) { showError("File not found: " + filename); return; }
+
+  String fullPath = "/BASIC/" + filename;
+
+  // Try BASIC folder first
+  File file = SD.open(fullPath);
+  if (!file) {
+    // Fallback to root (backward compatibility)
+    file = SD.open("/" + filename);
+    if (!file) {
+      showError("File not found: " + filename);
+      return;
+    }
+    fullPath = "/" + filename; // for message
+  }
 
   programLines.clear();
   userSprites.clear();
@@ -458,6 +507,39 @@ void executeLine(String line) {
   if (stopRun) return;
 
   if (cmd == "PRINT" || cmd == "?") {
+    // Check for PRINT #n,  (file output)
+    args.trim();
+    if (args.startsWith("#")) {
+      int commaPos = args.indexOf(',');
+      if (commaPos != -1) {
+        int fnum = args.substring(1, commaPos).toInt() - 1;
+        String rest = args.substring(commaPos + 1);
+        rest.trim();
+
+        if (fnum >= 0 && fnum < MAX_OPEN_FILES && fileIsOpen[fnum]) {
+          int p = 0;
+          while (p < rest.length()) {
+            if (rest[p] == '"') {
+              p++; String s = "";
+              while (p < rest.length() && rest[p] != '"') s += rest[p++];
+              if (p < rest.length()) p++;
+              openFiles[fnum].print(s);
+            } else {
+              float v = evaluateExpression(rest, p);
+              openFiles[fnum].print(v);
+            }
+            while (p < rest.length() && (rest[p] == ' ' || rest[p] == ',' || rest[p] == ';')) p++;
+          }
+          openFiles[fnum].println(); // auto newline for simplicity
+          return;
+        } else {
+          showError("File not open or invalid #: " + String(fnum+1));
+          return;
+        }
+      }
+    }
+
+    // Normal screen PRINT
     int p = 0; bool nl = true;
     while (p < args.length()) {
       if (args[p] == '"') {
@@ -478,6 +560,33 @@ void executeLine(String line) {
     if (nl) M5.Display.println();
   }
   else if (cmd == "INPUT") {
+    args.trim();
+    if (args.startsWith("#")) {
+      // INPUT #n, var   (read from file)
+      int comma = args.indexOf(',');
+      if (comma != -1) {
+        int fnum = args.substring(1, comma).toInt() - 1;
+        String varPart = args.substring(comma + 1);
+        varPart.trim();
+
+        if (fnum >= 0 && fnum < MAX_OPEN_FILES && fileIsOpen[fnum]) {
+          if (openFiles[fnum].available()) {
+            String valStr = openFiles[fnum].readStringUntil('\n');
+            valStr.trim();
+            float val = valStr.toFloat();
+            int idx = varIndex(varPart[0]);
+            if (idx >= 0) vars[idx] = val;
+          } else {
+            showError("End of file on #" + String(fnum+1));
+          }
+        } else {
+          showError("File #" + String(fnum+1) + " not open");
+        }
+        return;
+      }
+    }
+
+    // Normal keyboard INPUT
     String prompt = ""; int semi = args.indexOf(';');
     if (semi != -1) { prompt = args.substring(0, semi); args = args.substring(semi + 1); args.trim(); }
     if (prompt.length()) M5.Display.print(prompt);
@@ -692,6 +801,185 @@ void executeLine(String line) {
     if (fn.startsWith("\"") && fn.endsWith("\"")) fn = fn.substring(1, fn.length() - 1);
     loadProgram(fn);
   }
+  else if (cmd == "DELETE") {
+    String fn = args;
+    if (fn.startsWith("\"") && fn.endsWith("\"")) fn = fn.substring(1, fn.length() - 1);
+    if (!fn.endsWith(".bas")) fn += ".bas";
+
+    String path = "/BASIC/" + fn;
+    bool deleted = false;
+
+    if (SD.exists(path)) {
+      deleted = SD.remove(path);
+    } else {
+      // fallback to root
+      path = "/" + fn;
+      if (SD.exists(path)) {
+        deleted = SD.remove(path);
+      }
+    }
+
+    if (deleted) {
+      M5.Display.println("Deleted: " + fn);
+    } else {
+      showError("File not found or could not delete: " + fn);
+    }
+  }
+  else if (cmd == "RENAME") {
+    // RENAME "oldname", "newname"
+    int comma = args.indexOf(',');
+    if (comma == -1) { showError("RENAME needs oldname, newname"); return; }
+
+    String oldf = args.substring(0, comma);
+    String newf = args.substring(comma + 1);
+    oldf.trim(); newf.trim();
+
+    if (oldf.startsWith("\"") && oldf.endsWith("\"")) oldf = oldf.substring(1, oldf.length()-1);
+    if (newf.startsWith("\"") && newf.endsWith("\"")) newf = newf.substring(1, newf.length()-1);
+
+    if (!oldf.endsWith(".bas")) oldf += ".bas";
+    if (!newf.endsWith(".bas")) newf += ".bas";
+
+    String oldPath = "/BASIC/" + oldf;
+    String newPath = "/BASIC/" + newf;
+
+    if (!SD.exists(oldPath)) oldPath = "/" + oldf; // fallback
+
+    if (SD.rename(oldPath, newPath)) {
+      M5.Display.println("Renamed: " + oldf + " -> " + newf);
+    } else {
+      showError("Rename failed");
+    }
+  }
+  else if (cmd == "CAT") {
+    String fn = args;
+    if (fn.startsWith("\"") && fn.endsWith("\"")) fn = fn.substring(1, fn.length()-1);
+    if (!fn.endsWith(".bas")) fn += ".bas";
+
+    String path = "/BASIC/" + fn;
+    if (!SD.exists(path)) path = "/" + fn;
+
+    File f = SD.open(path);
+    if (!f) { showError("File not found: " + fn); return; }
+
+    M5.Display.println("--- " + fn + " ---");
+    while (f.available()) {
+      M5.Display.write(f.read());
+    }
+    f.close();
+    M5.Display.println("\n--- End of file ---");
+  }
+  else if (cmd == "OPEN") {
+    // Basic support: OPEN "file" FOR OUTPUT AS #1   or FOR INPUT
+    // Simplified parser
+    int forPos = args.indexOf("FOR");
+    int asPos  = args.indexOf("AS");
+    if (forPos == -1 || asPos == -1) { showError("OPEN syntax: OPEN \"file\" FOR INPUT/OUTPUT AS #n"); return; }
+
+    String fname = args.substring(0, forPos);
+    fname.trim();
+    if (fname.startsWith("\"") && fname.endsWith("\"")) fname = fname.substring(1, fname.length()-1);
+    if (!fname.endsWith(".bas")) fname += ".bas";
+
+    String modeStr = args.substring(forPos + 3, asPos);
+    modeStr.trim();
+    modeStr.toUpperCase();
+
+    String fileNumStr = args.substring(asPos + 2);
+    fileNumStr.trim();
+    if (fileNumStr.startsWith("#")) fileNumStr = fileNumStr.substring(1);
+    int fnum = fileNumStr.toInt() - 1; // 0-based
+
+    if (fnum < 0 || fnum >= MAX_OPEN_FILES) { showError("File number must be 1-3"); return; }
+    if (fileIsOpen[fnum]) { showError("File already open"); return; }
+
+    String fullPath = "/BASIC/" + fname;
+    if (!SD.exists(fullPath)) fullPath = "/" + fname; // fallback
+
+    // Use string modes for ESP32 FS/SD library (M5Stack core)
+    const char* openMode = "r"; // default = INPUT / read
+    if (modeStr.indexOf("OUTPUT") != -1 || modeStr.indexOf("APPEND") != -1) {
+        openMode = "w"; // write (creates file if needed)
+    }
+
+    openFiles[fnum] = SD.open(fullPath, openMode);
+    if (!openFiles[fnum]) {
+      showError("Failed to open file: " + fname);
+      return;
+    }
+    fileIsOpen[fnum] = true;
+    M5.Display.println("File #" + String(fnum+1) + " opened: " + fname);
+  }
+  else if (cmd == "CLOSE") {
+    if (args.length() == 0) {
+      // CLOSE all
+      for (int i = 0; i < MAX_OPEN_FILES; i++) {
+        if (fileIsOpen[i]) {
+          openFiles[i].close();
+          fileIsOpen[i] = false;
+        }
+      }
+      M5.Display.println("All files closed.");
+    } else {
+      int fnum = args.toInt() - 1;
+      if (fnum >= 0 && fnum < MAX_OPEN_FILES && fileIsOpen[fnum]) {
+        openFiles[fnum].close();
+        fileIsOpen[fnum] = false;
+        M5.Display.println("File #" + String(fnum+1) + " closed.");
+      } else {
+        showError("Invalid or not open file number");
+      }
+    }
+  }
+  else if (cmd == "DIR" || cmd == "FILES" || cmd == "LS") {
+    // List BASIC programs in /BASIC folder + show free space
+    if (SD.cardType() == CARD_NONE) {
+      M5.Display.println("SD card not ready or not inserted.");
+      return;
+    }
+
+    File dir = SD.open("/BASIC");
+    if (!dir || !dir.isDirectory()) {
+      M5.Display.println("No /BASIC folder found on SD card.");
+      return;
+    }
+
+    M5.Display.println("BASIC Programs on SD:");
+    M5.Display.println("---------------------");
+
+    int count = 0;
+    while (true) {
+      File entry = dir.openNextFile();
+      if (!entry) break;
+      if (!entry.isDirectory()) {
+        String name = entry.name();
+        if (name.endsWith(".bas") || name.endsWith(".BAS")) {
+          M5.Display.print("  ");
+          M5.Display.print(name);
+          for (int i = name.length(); i < 18; i++) M5.Display.print(" ");
+          M5.Display.print(entry.size());
+          M5.Display.println(" bytes");
+          count++;
+        }
+      }
+      entry.close();
+    }
+    dir.close();
+
+    if (count == 0) M5.Display.println("  (no .bas files found)");
+
+    // Show storage info
+    uint64_t total = SD.cardSize();
+    uint64_t used  = SD.usedBytes();
+    uint64_t freeB = total - used;
+
+    M5.Display.println("---------------------");
+    M5.Display.print("Free: ");
+    M5.Display.print(freeB / 1024);
+    M5.Display.print(" KB   |  Total: ");
+    M5.Display.print(total / (1024 * 1024));
+    M5.Display.println(" MB");
+  }
   else if (cmd == "RUN") {
     running = true;
     currentLine = 0;
@@ -800,7 +1088,7 @@ void setup() {
     M5.Display.println("SD card ready.");
   } else {
     M5.Display.setTextColor(TFT_YELLOW);
-    M5.Display.println("SD init failed (insert formatted microSD).");
+    M5.Display.println("SD init failed. Check card inserted + formatted as FAT32.");
     M5.Display.setTextColor(TFT_WHITE);
   }
 
