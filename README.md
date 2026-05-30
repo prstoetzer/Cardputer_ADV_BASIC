@@ -143,25 +143,34 @@ A leading minus negates a value or variable (`-A`, `-(X+1)`). Comparisons and lo
 |---|---|---|
 | `PRINT` (or `?`) | `PRINT "X="; X, A$` | `;` joins items with no gap and suppresses the trailing newline; `,` inserts a column gap. Mixes strings and numbers freely. |
 | `INPUT` | `INPUT N` / `INPUT "Name"; N$` | Reads a line from the keyboard. A `$` variable stores text; a numeric variable parses a number. An optional quoted prompt may precede the variable, separated by `;`. |
-| `CLS` | `CLS` | Clear the screen |
+| `CLS` | `CLS` / `CLS BLUE` | Clear the screen (optionally to a background color) |
 | `LOCATE` | `LOCATE 10, 20` | Move the text cursor to pixel x, y |
-| `COLOR` | `COLOR 65535` | Set the **text** color (16-bit RGB565). Graphics commands are not affected by this. |
+| `COLOR` | `COLOR YELLOW` / `COLOR WHITE, BLUE` | Set the **text** color, and optionally the text background. Graphics use `PEN`, not `COLOR`. |
 
 ### Graphics statements
 
-The screen is **240 × 135** pixels. All graphics shapes draw in **white**; `COLOR` changes text color only (the exception is `SPRITE`, which takes its own color argument).
+The screen is **240 × 135** pixels. Every drawing command takes an **optional trailing color** argument; if you omit it, the command uses the current **pen color** (set with `PEN`, default white). Colors are 16-bit RGB565 values — you can use a number or one of the named constants below.
 
 | Statement | Example | Arguments |
 |---|---|---|
-| `PLOT` | `PLOT 50, 30` | x, y — single pixel |
-| `LINE` | `LINE 0,0,100,60` | x1, y1, x2, y2 |
-| `CIRCLE` | `CIRCLE 60, 40, 20` | x, y, radius (outline) |
-| `RECT` / `BOX` | `RECT 10,10,40,20` | x, y, width, height (outline) |
-| `FILLRECT` / `FILL` | `FILLRECT 10,10,40,20` | x, y, width, height (filled) |
-| `SPRITE` | `SPRITE 0, 50, 40, 2016` | id, x, y, [color] — color is optional (default white) |
+| `PEN` | `PEN RED` | Set the default draw color for following graphics |
+| `PLOT` | `PLOT 50, 30` / `PLOT 50,30,RED` | x, y [, color] — single pixel |
+| `UNPLOT` | `UNPLOT 50, 30` | Erase a pixel (draws it black) |
+| `LINE` | `LINE 0,0,100,60,CYAN` | x1, y1, x2, y2 [, color] |
+| `CIRCLE` | `CIRCLE 60,40,20,GREEN` | x, y, radius [, color] (outline) |
+| `FILLCIRCLE` | `FILLCIRCLE 60,40,20,GREEN` | x, y, radius [, color] (filled) |
+| `RECT` / `BOX` | `RECT 10,10,40,20` | x, y, width, height [, color] (outline) |
+| `FILLRECT` / `FILL` | `FILLRECT 10,10,40,20,BLUE` | x, y, width, height [, color] (filled) |
+| `ERASE` / `CLEARRECT` | `ERASE 10,10,40,20` | Erase a rectangular region (fills it black) |
+| `SPRITE` | `SPRITE 0, 50, 40, YELLOW` | id, x, y [, color] |
+| `UNSPRITE` | `UNSPRITE 0, 50, 40` | Erase a sprite at that position (redraws it black) |
 | `DEFSPRITE` | `DEFSPRITE 5` | Define sprite `id` from the next `DATA` (see [User-defined sprites](#user-defined-sprites)) |
 
 Built-in sprite IDs `0` (ball, 8×8), `1` (ship, 16×8), and `2` (alien, 8×8) are available without defining anything.
+
+**Erasing without clearing the screen:** use `UNPLOT`, `UNSPRITE`, or `ERASE`/`CLEARRECT`, or simply redraw any shape with the color `BLACK`. This is how you animate — draw, erase, move, redraw — without the flicker of a full `CLS`.
+
+**Named colors:** `BLACK`, `WHITE`, `RED`, `GREEN`, `BLUE`, `YELLOW`, `CYAN`, `MAGENTA`, `ORANGE`, `PURPLE`, `GRAY` (`GREY`). These work anywhere a color value is expected, including `PEN`, `COLOR`, and `CLS`.
 
 ### Sound statements
 
@@ -262,20 +271,20 @@ If you have files from an older version sitting in the card's root, move them in
 
 ## Examples
 
-**Bouncing dot**
+**Bouncing dot** (erases itself instead of clearing the whole screen)
 
 ```basic
 10 X = 10
 20 Y = 10
-30 D = 2
-40 E = 1
-50 CLS
-60 PLOT X, Y
-70 X = X + D
-80 Y = Y + E
-90 IF X > 230 OR X < 1 THEN D = -D
-100 IF Y > 130 OR Y < 1 THEN E = -E
-110 PAUSE 10
+30 DX = 2
+40 DY = 1
+50 PLOT X, Y, CYAN
+60 PAUSE 10
+70 UNPLOT X, Y
+80 X = X + DX
+90 Y = Y + DY
+100 IF X > 238 OR X < 1 THEN DX = -DX
+110 IF Y > 133 OR Y < 1 THEN DY = -DY
 120 GOTO 50
 ```
 
@@ -327,7 +336,6 @@ These are deliberate, to keep the interpreter small and fast on the device:
 - **No multi-statement lines** — one statement per line number (no `:` separator).
 - `RESTORE` rewinds to the beginning only; it doesn't take a line number.
 - `READ` and `DEFSPRITE` share one data pointer (classic behavior), so mixing them consumes from the same sequence.
-- Graphics primitives draw in white; only text color is adjustable via `COLOR`.
 
 ## Contributing
 
