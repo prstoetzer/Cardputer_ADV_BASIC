@@ -418,7 +418,15 @@ float evaluateExpression(const String& expr, int& pos) {
   return left;
 }
 
-// --------------------------- Number Formatting ------------------------------
+// Evaluate one argument from a comma-separated statement argument list.
+// Skips leading whitespace and a single separating comma so successive calls
+// advance past each value (e.g. PLOT x, y / LINE x1,y1,x2,y2).
+float argVal(const String& args, int& pos) {
+  while (pos < (int)args.length() && (args[pos] == ' ' || args[pos] == '\t')) pos++;
+  if (pos < (int)args.length() && args[pos] == ',') pos++;
+  return evaluateExpression(args, pos);
+}
+
 // Format a float the way classic BASIC prints it: integers without a decimal
 // point, fractions without trailing zeros.
 String numToBasicStr(float v) {
@@ -1159,7 +1167,7 @@ void executeLine(String line) {
   }
   else if (cmd == "DEFSPRITE") {
     int p = 0;
-    float id = evaluateExpression(args, p);
+    float id = argVal(args, p);
     defSpriteFromData((int)id);
   }
   else if (cmd == "END" || cmd == "STOP") {
@@ -1169,46 +1177,64 @@ void executeLine(String line) {
     M5.Display.clear(); M5.Display.setCursor(0, 0);
   }
   else if (cmd == "COLOR") {
-    int p = 0; float fg = evaluateExpression(args, p);
+    int p = 0; float fg = argVal(args, p);
     M5.Display.setTextColor((uint16_t)fg, TFT_BLACK);
   }
   else if (cmd == "PLOT") {
-    int p = 0; float x = evaluateExpression(args, p); float y = evaluateExpression(args, p);
+    int p = 0; float x = argVal(args, p); float y = argVal(args, p);
     M5.Display.drawPixel((int)x, (int)y, TFT_WHITE);
   }
   else if (cmd == "LINE") {
-    int p = 0; float x1 = evaluateExpression(args, p); float y1 = evaluateExpression(args, p);
-    float x2 = evaluateExpression(args, p); float y2 = evaluateExpression(args, p);
+    int p = 0; float x1 = argVal(args, p); float y1 = argVal(args, p);
+    float x2 = argVal(args, p); float y2 = argVal(args, p);
     M5.Display.drawLine((int)x1, (int)y1, (int)x2, (int)y2, TFT_WHITE);
   }
   else if (cmd == "CIRCLE") {
-    int p = 0; float x = evaluateExpression(args, p); float y = evaluateExpression(args, p); float r = evaluateExpression(args, p);
+    int p = 0; float x = argVal(args, p); float y = argVal(args, p); float r = argVal(args, p);
     M5.Display.drawCircle((int)x, (int)y, (int)r, TFT_WHITE);
   }
   else if (cmd == "RECT" || cmd == "BOX") {
-    int p = 0; float x = evaluateExpression(args, p); float y = evaluateExpression(args, p);
-    float w = evaluateExpression(args, p); float h = evaluateExpression(args, p);
+    int p = 0; float x = argVal(args, p); float y = argVal(args, p);
+    float w = argVal(args, p); float h = argVal(args, p);
     M5.Display.drawRect((int)x, (int)y, (int)w, (int)h, TFT_WHITE);
   }
   else if (cmd == "FILLRECT" || cmd == "FILL") {
-    int p = 0; float x = evaluateExpression(args, p); float y = evaluateExpression(args, p);
-    float w = evaluateExpression(args, p); float h = evaluateExpression(args, p);
+    int p = 0; float x = argVal(args, p); float y = argVal(args, p);
+    float w = argVal(args, p); float h = argVal(args, p);
     M5.Display.fillRect((int)x, (int)y, (int)w, (int)h, TFT_WHITE);
   }
   else if (cmd == "LOCATE") {
-    int p = 0; float x = evaluateExpression(args, p); float y = evaluateExpression(args, p);
+    int p = 0; float x = argVal(args, p); float y = argVal(args, p);
     M5.Display.setCursor((int)x, (int)y);
   }
   else if (cmd == "SPRITE") {
-    int p = 0; float id = evaluateExpression(args, p); float x = evaluateExpression(args, p); float y = evaluateExpression(args, p);
+    int p = 0; float id = argVal(args, p); float x = argVal(args, p); float y = argVal(args, p);
     uint16_t col = TFT_WHITE;
-    if (p < args.length()) { float c = evaluateExpression(args, p); col = (uint16_t)c; }
+    // Optional 4th arg (color): only if a comma with a value actually follows.
+    while (p < (int)args.length() && (args[p] == ' ' || args[p] == '\t')) p++;
+    if (p < (int)args.length() && args[p] == ',') {
+      p++;
+      float c = evaluateExpression(args, p);
+      col = (uint16_t)c;
+    }
     drawSprite((int)id, (int)x, (int)y, col);
   }
   else if (cmd == "BEEP" || cmd == "TONE") {
-    int p = 0; float f = evaluateExpression(args, p); float d = evaluateExpression(args, p);
-    if (d < 10) d = 100;
+    int p = 0; float f = argVal(args, p);
+    float d = 200;  // default duration (ms) if none given
+    // Read the duration argument if one was supplied.
+    while (p < (int)args.length() && (args[p] == ' ' || args[p] == ',')) p++;
+    if (p < (int)args.length()) d = evaluateExpression(args, p);
+    if (d < 1) d = 1;
     M5.Speaker.tone((uint32_t)f, (uint32_t)d);
+    // tone() is asynchronous; wait so the note actually sounds for its full
+    // duration and isn't cut off by the next statement. Stay break-responsive.
+    unsigned long start = millis();
+    while (millis() - start < (unsigned long)d) {
+      checkBreak();
+      if (stopRun) break;
+      delay(2);
+    }
   }
   else if (cmd == "PLAY") {
     String tune = args;
@@ -1216,18 +1242,18 @@ void executeLine(String line) {
     playTune(tune);
   }
   else if (cmd == "PINMODE") {
-    int p = 0; float pin = evaluateExpression(args, p); float mode = evaluateExpression(args, p);
+    int p = 0; float pin = argVal(args, p); float mode = argVal(args, p);
     if (mode == 0) pinMode((int)pin, INPUT);
     else if (mode == 1) pinMode((int)pin, OUTPUT);
     else if (mode == 2) pinMode((int)pin, INPUT_PULLUP);
     else if (mode == 3) pinMode((int)pin, INPUT_PULLDOWN);
   }
   else if (cmd == "DWRITE" || cmd == "DIGITALWRITE") {
-    int p = 0; float pin = evaluateExpression(args, p); float val = evaluateExpression(args, p);
+    int p = 0; float pin = argVal(args, p); float val = argVal(args, p);
     digitalWrite((int)pin, val > 0 ? HIGH : LOW);
   }
   else if (cmd == "PWM") {
-    int p = 0; float pin = evaluateExpression(args, p); float duty = evaluateExpression(args, p);
+    int p = 0; float pin = argVal(args, p); float duty = argVal(args, p);
     static bool pwmAttached[49] = {false};   // ESP32-S3 GPIO range
     int pinNum = (int)pin;
     if (pinNum >= 0 && pinNum < 49 && !pwmAttached[pinNum]) {
