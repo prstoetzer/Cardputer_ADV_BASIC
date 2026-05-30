@@ -6,7 +6,9 @@
 // - Classic line-numbered BASIC (PRINT, INPUT, IF, GOTO, GOSUB, RETURN, END, etc.)
 // - FOR / NEXT with STEP and nesting
 // - DATA / READ / RESTORE for constants and sprite data
-// - Graphics: CLS, PLOT, LINE, CIRCLE, RECT, FILLRECT, LOCATE, COLOR, SPRITE
+// - Graphics: CLS, PLOT, LINE, CIRCLE, FILLCIRCLE, RECT, FILLRECT, LOCATE, COLOR, SPRITE
+// - Color graphics: optional color arg on every shape, PEN to set default, named colors (RED, GREEN, ...)
+// - Erase without clearing: UNPLOT, UNSPRITE, ERASE/CLEARRECT (or draw a shape in BLACK)
 // - User-definable sprites via DEFSPRITE + DATA
 // - Sound: BEEP / TONE + PLAY "notes"
 // - GPIO: PINMODE, DWRITE, PWM, DIGITALREAD(), ANALOGREAD(), INKEY()
@@ -63,6 +65,8 @@ bool  stopRun = false;
 bool  jumped = false;   // set true when a statement changes currentLine (GOTO/GOSUB/RETURN/IF/FOR-NEXT)
 String lastError = "";
 
+uint16_t gPenColor = 0xFFFF;   // current graphics draw color (default white)
+
 // --------------------------- File I/O Support -------------------------------
 #define MAX_OPEN_FILES 3
 File openFiles[MAX_OPEN_FILES];
@@ -100,6 +104,7 @@ void  checkBreak();
 String readKeyboardLine(const String& prompt = "");
 void  drawSprite(int id, int x, int y, uint16_t color);
 void  playTune(String tune);
+void  stopSound();
 bool  initSD();
 void  ensureBasicDir();
 String sandboxPath(String name);
@@ -258,6 +263,18 @@ float evaluateExpression(const String& expr, int& pos) {
       }
 
       if (name == "PI") return 3.1415926535;
+      // Named colors (RGB565) so users don't have to compute values.
+      if (name == "BLACK")   return 0x0000;
+      if (name == "WHITE")   return 0xFFFF;
+      if (name == "RED")     return 0xF800;
+      if (name == "GREEN")   return 0x07E0;
+      if (name == "BLUE")    return 0x001F;
+      if (name == "YELLOW")  return 0xFFE0;
+      if (name == "CYAN")    return 0x07FF;
+      if (name == "MAGENTA") return 0xF81F;
+      if (name == "ORANGE")  return 0xFD20;
+      if (name == "PURPLE")  return 0x780F;
+      if (name == "GRAY" || name == "GREY") return 0x8410;
       if (name == "RND") {
         if (pos < expr.length() && expr[pos] == '(') { pos++; skipWS(); if (pos < expr.length() && expr[pos] == ')') pos++; }
         return (float)random(0, 1000000) / 1000000.0;
@@ -425,6 +442,17 @@ float argVal(const String& args, int& pos) {
   while (pos < (int)args.length() && (args[pos] == ' ' || args[pos] == '\t')) pos++;
   if (pos < (int)args.length() && args[pos] == ',') pos++;
   return evaluateExpression(args, pos);
+}
+
+// Read an optional trailing color argument. If a comma + value follows, use it;
+// otherwise fall back to the supplied default (normally the current pen color).
+uint16_t optColor(const String& args, int& pos, uint16_t fallback) {
+  while (pos < (int)args.length() && (args[pos] == ' ' || args[pos] == '\t')) pos++;
+  if (pos < (int)args.length() && args[pos] == ',') {
+    pos++;
+    return (uint16_t)evaluateExpression(args, pos);
+  }
+  return fallback;
 }
 
 // Format a float the way classic BASIC prints it: integers without a decimal
@@ -714,6 +742,12 @@ void playTune(String tune) {
     }
     i++;
   }
+  M5.Speaker.stop();
+}
+
+// Cleanly silence the speaker. Called when a program ends or is broken so the
+// amplifier isn't left driving a tone (which otherwise clicks/pops).
+void stopSound() {
   M5.Speaker.stop();
 }
 
@@ -1171,37 +1205,71 @@ void executeLine(String line) {
     defSpriteFromData((int)id);
   }
   else if (cmd == "END" || cmd == "STOP") {
-    running = false; M5.Display.println("Program ended.");
+    running = false; stopSound(); M5.Display.println("Program ended.");
   }
   else if (cmd == "CLS") {
-    M5.Display.clear(); M5.Display.setCursor(0, 0);
+    // Optional background color: CLS [color]
+    uint16_t bg = TFT_BLACK;
+    int p = 0;
+    while (p < (int)args.length() && (args[p] == ' ' || args[p] == '\t')) p++;
+    if (p < (int)args.length()) bg = (uint16_t)evaluateExpression(args, p);
+    M5.Display.fillScreen(bg);
+    M5.Display.setCursor(0, 0);
   }
   else if (cmd == "COLOR") {
     int p = 0; float fg = argVal(args, p);
-    M5.Display.setTextColor((uint16_t)fg, TFT_BLACK);
+    uint16_t bg = TFT_BLACK;
+    while (p < (int)args.length() && (args[p] == ' ' || args[p] == '\t')) p++;
+    if (p < (int)args.length() && args[p] == ',') { p++; bg = (uint16_t)evaluateExpression(args, p); }
+    M5.Display.setTextColor((uint16_t)fg, bg);
+  }
+  else if (cmd == "PEN") {
+    // PEN color  -- set the default color used by graphics commands
+    int p = 0; gPenColor = (uint16_t)argVal(args, p);
   }
   else if (cmd == "PLOT") {
     int p = 0; float x = argVal(args, p); float y = argVal(args, p);
-    M5.Display.drawPixel((int)x, (int)y, TFT_WHITE);
+    uint16_t col = optColor(args, p, gPenColor);
+    M5.Display.drawPixel((int)x, (int)y, col);
+  }
+  else if (cmd == "UNPLOT") {
+    // Erase a pixel by drawing it in black.
+    int p = 0; float x = argVal(args, p); float y = argVal(args, p);
+    M5.Display.drawPixel((int)x, (int)y, TFT_BLACK);
   }
   else if (cmd == "LINE") {
     int p = 0; float x1 = argVal(args, p); float y1 = argVal(args, p);
     float x2 = argVal(args, p); float y2 = argVal(args, p);
-    M5.Display.drawLine((int)x1, (int)y1, (int)x2, (int)y2, TFT_WHITE);
+    uint16_t col = optColor(args, p, gPenColor);
+    M5.Display.drawLine((int)x1, (int)y1, (int)x2, (int)y2, col);
   }
   else if (cmd == "CIRCLE") {
     int p = 0; float x = argVal(args, p); float y = argVal(args, p); float r = argVal(args, p);
-    M5.Display.drawCircle((int)x, (int)y, (int)r, TFT_WHITE);
+    uint16_t col = optColor(args, p, gPenColor);
+    M5.Display.drawCircle((int)x, (int)y, (int)r, col);
+  }
+  else if (cmd == "FILLCIRCLE") {
+    int p = 0; float x = argVal(args, p); float y = argVal(args, p); float r = argVal(args, p);
+    uint16_t col = optColor(args, p, gPenColor);
+    M5.Display.fillCircle((int)x, (int)y, (int)r, col);
   }
   else if (cmd == "RECT" || cmd == "BOX") {
     int p = 0; float x = argVal(args, p); float y = argVal(args, p);
     float w = argVal(args, p); float h = argVal(args, p);
-    M5.Display.drawRect((int)x, (int)y, (int)w, (int)h, TFT_WHITE);
+    uint16_t col = optColor(args, p, gPenColor);
+    M5.Display.drawRect((int)x, (int)y, (int)w, (int)h, col);
   }
   else if (cmd == "FILLRECT" || cmd == "FILL") {
     int p = 0; float x = argVal(args, p); float y = argVal(args, p);
     float w = argVal(args, p); float h = argVal(args, p);
-    M5.Display.fillRect((int)x, (int)y, (int)w, (int)h, TFT_WHITE);
+    uint16_t col = optColor(args, p, gPenColor);
+    M5.Display.fillRect((int)x, (int)y, (int)w, (int)h, col);
+  }
+  else if (cmd == "CLEARRECT" || cmd == "ERASE") {
+    // Erase a rectangular region by filling it with black.
+    int p = 0; float x = argVal(args, p); float y = argVal(args, p);
+    float w = argVal(args, p); float h = argVal(args, p);
+    M5.Display.fillRect((int)x, (int)y, (int)w, (int)h, TFT_BLACK);
   }
   else if (cmd == "LOCATE") {
     int p = 0; float x = argVal(args, p); float y = argVal(args, p);
@@ -1209,15 +1277,14 @@ void executeLine(String line) {
   }
   else if (cmd == "SPRITE") {
     int p = 0; float id = argVal(args, p); float x = argVal(args, p); float y = argVal(args, p);
-    uint16_t col = TFT_WHITE;
-    // Optional 4th arg (color): only if a comma with a value actually follows.
-    while (p < (int)args.length() && (args[p] == ' ' || args[p] == '\t')) p++;
-    if (p < (int)args.length() && args[p] == ',') {
-      p++;
-      float c = evaluateExpression(args, p);
-      col = (uint16_t)c;
-    }
+    // Optional 4th arg (color); defaults to the current pen color.
+    uint16_t col = optColor(args, p, gPenColor);
     drawSprite((int)id, (int)x, (int)y, col);
+  }
+  else if (cmd == "UNSPRITE") {
+    // Erase a previously drawn sprite by redrawing it in black.
+    int p = 0; float id = argVal(args, p); float x = argVal(args, p); float y = argVal(args, p);
+    drawSprite((int)id, (int)x, (int)y, TFT_BLACK);
   }
   else if (cmd == "BEEP" || cmd == "TONE") {
     int p = 0; float f = argVal(args, p);
@@ -1235,6 +1302,7 @@ void executeLine(String line) {
       if (stopRun) break;
       delay(2);
     }
+    M5.Speaker.stop();   // clean end to avoid a click/pop
   }
   else if (cmd == "PLAY") {
     String tune = args;
@@ -1435,6 +1503,7 @@ void executeLine(String line) {
     forStack.clear();
     userSprites.clear();          // optional: keep or clear on RUN
     stopRun = false;
+    gPenColor = 0xFFFF;           // reset graphics pen to white
     rebuildDataStore();
     dataIndex = 0;
     M5.Display.println("Running...");
@@ -1591,7 +1660,17 @@ void setup() {
   M5.Display.clear();
   M5.Display.setCursor(0, 4);  // small top margin to avoid cutoff
 
-  M5.Speaker.setVolume(128);
+  // Speaker configuration. Larger DMA buffers reduce underrun distortion on
+  // sustained or repeated tones. setVolume well under max avoids clipping.
+  {
+    auto spk = M5.Speaker.config();
+    spk.dma_buf_len   = 256;
+    spk.dma_buf_count = 8;
+    M5.Speaker.config(spk);
+  }
+  M5.Speaker.begin();
+  M5.Speaker.setVolume(96);   // 0-255; moderate level avoids clipping/distortion
+  M5.Speaker.stop();          // ensure quiet, no startup pop held on the line
   randomSeed(analogRead(0));
 
   M5.Display.println("Cardputer ADV BASIC v1.2");
@@ -1634,6 +1713,7 @@ void loop() {
   if (stopRun) {
     running = false;
     stopRun = false;
+    stopSound();
     printPrompt();
     return;
   }
@@ -1643,6 +1723,7 @@ void loop() {
     auto it = programLines.lower_bound(currentLine);
     if (it == programLines.end()) {
       running = false;
+      stopSound();
       M5.Display.println("Program finished.");
       printPrompt();
       return;
@@ -1657,6 +1738,7 @@ void loop() {
     if (!running || stopRun) {
       running = false;
       if (stopRun) stopRun = false;
+      stopSound();
       printPrompt();
       return;
     }
@@ -1672,6 +1754,7 @@ void loop() {
       currentLine = next->first;
     } else {
       running = false;
+      stopSound();
       M5.Display.println("End of program.");
       printPrompt();
     }
