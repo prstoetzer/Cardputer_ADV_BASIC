@@ -267,14 +267,14 @@ If you have files from an older version sitting in the card's root, move them in
 ```basic
 10 X = 10
 20 Y = 10
-30 DX = 2
-40 DY = 1
+30 D = 2
+40 E = 1
 50 CLS
 60 PLOT X, Y
-70 X = X + DX
-80 Y = Y + DY
-90 IF X > 230 OR X < 1 THEN DX = -DX
-100 IF Y > 130 OR Y < 1 THEN DY = -DY
+70 X = X + D
+80 Y = Y + E
+90 IF X > 230 OR X < 1 THEN D = -D
+100 IF Y > 130 OR Y < 1 THEN E = -E
 110 PAUSE 10
 120 GOTO 50
 ```
